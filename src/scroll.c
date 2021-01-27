@@ -128,6 +128,9 @@ struct scroll_screen *new_scroll_screen(int x, int y, int width, int height) {
 		0, 0,
 		BlackPixel(x11.display, 0));
 
+	_check_or_die(res->window, "Failed to create window with size (%d; %d) at (%d; %d)",
+		width, height, x, y);
+
 	XSetBackground(x11.display, x11.gc, BlackPixel(x11.display, 0));
 
 	Atom a = XInternAtom(x11.display, "_NET_WM_WINDOW_TYPE", False);
@@ -139,8 +142,6 @@ struct scroll_screen *new_scroll_screen(int x, int y, int width, int height) {
 
 	XMapWindow(x11.display, res->window);
 	XLowerWindow(x11.display, res->window);
-	_check_or_die(res->window, "Failed to create window with size (%d; %d) at (%d; %d)",
-		width, height, x, y);
 
 	/* Scale image correctly */
 	imlib_context_set_image(image);
@@ -181,10 +182,11 @@ struct scroll_screen *new_scroll_screen(int x, int y, int width, int height) {
 		0, 0,
 		BlackPixel(x11.display, 0));
 
-	XMapWindow(x11.display, res->image_window);
 	_check_or_die(res->image_window,
 		"Failed to create image subwindow for window at (%d; %d)",
 		x, y);
+
+	XMapWindow(x11.display, res->image_window);
 
 	XSetWindowBackgroundPixmap(x11.display, res->image_window, pixmap);
 	XClearWindow(x11.display, res->image_window);
