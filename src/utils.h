@@ -24,6 +24,4 @@
     exit(1);\
 }
 
-void *_malloc_or_die(size_t s);
-
 #endif

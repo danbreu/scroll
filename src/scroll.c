@@ -35,7 +35,12 @@ struct scroll_screen {
 	int image_width, image_height;
 };
 
-enum scroll_scaling_modes { SCALE_STRETCH = 0, SCALE_FIT_HORIZ, SCALE_FIT_VERT, SCALE_END };
+enum scroll_scaling_modes {
+	SCALE_STRETCH = 0,
+	SCALE_FIT_HORIZ,
+	SCALE_FIT_VERT,
+	SCALE_END
+};
 
 struct scroll_x11 {
 	Display *display;
@@ -44,12 +49,7 @@ struct scroll_x11 {
 	GC gc;
 	Colormap colormap;
 	int depth;
-} x11;
-
-Imlib_Image image = NULL;
-
-struct scroll_screen **screens;
-int num_screens;
+};
 
 struct scroll_opts {
 	char *image;
@@ -61,16 +61,6 @@ struct scroll_opts {
 	int bezier;
 	int bezier_res;
 	int fps;
-} opts = {
-	NULL,
-	1,
-	SCALE_STRETCH,
-	0,
-	NULL,
-	0.1/1000,
-	0,
-	15,
-	60,
 };
 
 struct scroll_anim {
@@ -81,15 +71,51 @@ struct scroll_anim {
 	struct scroll_vec cur_pos;
 	int cur_time;
 	double cur_travel_time;
-} anim = {
-	NULL,
-	0,
-	-1,
-	{0, 0},
-	{0, 0},
-	1,
-	1.0
 };
+
+struct scroll_ctx {
+	struct scroll_x11 x11;
+
+	struct scroll_screen **screens;
+	int num_screens;
+
+	struct scroll_anim anim;
+
+	Imlib_Image image;
+
+	struct scroll_opts opts;
+};
+
+struct scroll_ctx *scroll_init_ctx(struct scroll_ctx *ctx) {
+	ctx->screens = NULL;
+	ctx->num_screens = 0;
+
+	ctx->anim = (struct scroll_anim) {
+		NULL,
+		0,
+		-1,
+		{0, 0},
+		{0, 0},
+		1,
+		1.0
+	};
+
+	ctx->image = NULL;
+
+	ctx->opts = (struct scroll_opts) {
+		NULL,
+		1,
+		SCALE_STRETCH,
+		0,
+		NULL,
+		0.1/1000,
+		0,
+		15,
+		60,
+	};
+
+	return ctx;
+}
 
 
 /* Helpers */
@@ -111,9 +137,9 @@ void image_to_drawable(Drawable drw, Imlib_Image img, int x, int y, int w, int h
 }
 
 
-struct scroll_screen *new_scroll_screen(int x, int y, int width, int height) {
+struct scroll_screen *new_scroll_screen(struct scroll_ctx *ctx, int x, int y, int width, int height) {
 	_debug("Creating screen with size (%d; %d) at (%d; %d)", width, height, x, y);
-	struct scroll_screen *res = _malloc_or_die(sizeof(struct scroll_screen));
+	struct scroll_screen *res = malloc(sizeof(struct scroll_screen));
 
 	res->x = x;
 	res->y = y;
@@ -121,87 +147,87 @@ struct scroll_screen *new_scroll_screen(int x, int y, int width, int height) {
 	res->height = height;
 
 	/* Create desktop window */
-	res->window = XCreateSimpleWindow(x11.display,
-		x11.root,
+	res->window = XCreateSimpleWindow(ctx->x11.display,
+		ctx->x11.root,
 		x, y,
 		width, height,
 		0, 0,
-		BlackPixel(x11.display, 0));
+		BlackPixel(ctx->x11.display, 0));
 
 	_check_or_die(res->window, "Failed to create window with size (%d; %d) at (%d; %d)",
 		width, height, x, y);
 
-	XSetBackground(x11.display, x11.gc, BlackPixel(x11.display, 0));
+	XSetBackground(ctx->x11.display, ctx->x11.gc, BlackPixel(ctx->x11.display, 0));
 
-	Atom a = XInternAtom(x11.display, "_NET_WM_WINDOW_TYPE", False);
+	Atom a = XInternAtom(ctx->x11.display, "_NET_WM_WINDOW_TYPE", False);
 	if (a) {
-		Atom a_desktop = XInternAtom(x11.display, "_NET_WM_WINDOW_TYPE_DESKTOP", False);
-		XChangeProperty(x11.display, res->window, a, XA_ATOM, 32, PropModeReplace,
+		Atom a_desktop = XInternAtom(ctx->x11.display, "_NET_WM_WINDOW_TYPE_DESKTOP", False);
+		XChangeProperty(ctx->x11.display, res->window, a, XA_ATOM, 32, PropModeReplace,
 			(unsigned char *) &a_desktop, 1);
 	}
 
-	XMapWindow(x11.display, res->window);
-	XLowerWindow(x11.display, res->window);
+	XMapWindow(ctx->x11.display, res->window);
+	XLowerWindow(ctx->x11.display, res->window);
 
 	/* Scale image correctly */
-	imlib_context_set_image(image);
+	imlib_context_set_image(ctx->image);
 	int buf;
 	double scale;
 
-	switch (opts.scaling_mode) {
+	switch (ctx->opts.scaling_mode) {
 	case SCALE_FIT_VERT:
-		buf = res->height * opts.scale;
+		buf = res->height * ctx->opts.scale;
 		scale = (double)buf / imlib_image_get_height();
 		res->image_width = imlib_image_get_width() * scale;
 		res->image_height = buf;
 		break;
 	case SCALE_FIT_HORIZ:
-		buf = res->width * opts.scale;
+		buf = res->width * ctx->opts.scale;
 		scale = (double)buf / imlib_image_get_width();
 		res->image_width = buf;
 		res->image_height = imlib_image_get_height() * scale;
 		break;
 	case SCALE_STRETCH:
 	default:
-		res->image_width = res->width * opts.scale;
-		res->image_height = res->height * opts.scale;
+		res->image_width = res->width * ctx->opts.scale;
+		res->image_height = res->height * ctx->opts.scale;
 		break;
 	}
 
 	/* Draw image to pixmap */
-	Pixmap pixmap = XCreatePixmap(x11.display, x11.root, res->image_width, res->image_height, x11.depth);
+	Pixmap pixmap = XCreatePixmap(ctx->x11.display, ctx->x11.root, res->image_width, res->image_height, ctx->x11.depth);
 	_check_or_die(pixmap, "Failed to create pixmap");
-	image_to_drawable(pixmap, image, 0, 0, res->image_width, res->image_height, 1, 1, 1);
+	image_to_drawable(pixmap, ctx->image, 0, 0, res->image_width, res->image_height, 1, 1, 1);
 
 	/* Create the "image window" which is moved around to scroll the image */
-	res->image_window = XCreateSimpleWindow(x11.display,
+	res->image_window = XCreateSimpleWindow(ctx->x11.display,
 		res->window,
 		x, y,
 		res->image_width,
 		res->image_height,
 		0, 0,
-		BlackPixel(x11.display, 0));
+		BlackPixel(ctx->x11.display, 0));
 
 	_check_or_die(res->image_window,
 		"Failed to create image subwindow for window at (%d; %d)",
 		x, y);
 
-	XMapWindow(x11.display, res->image_window);
+	XMapWindow(ctx->x11.display, res->image_window);
 
-	XSetWindowBackgroundPixmap(x11.display, res->image_window, pixmap);
-	XClearWindow(x11.display, res->image_window);
-	XFlush(x11.display);
+	XSetWindowBackgroundPixmap(ctx->x11.display, res->image_window, pixmap);
+	XClearWindow(ctx->x11.display, res->image_window);
+	XFlush(ctx->x11.display);
 
-	XFreePixmap(x11.display, pixmap);
+	XFreePixmap(ctx->x11.display, pixmap);
 
 	return res;
 }
 
-void scroll_parse_points(char *point_string) {
+void scroll_parse_points(struct scroll_ctx *ctx, char *point_string) {
 	int len = strlen(point_string);
 
-	opts.points = _malloc_or_die(sizeof(struct scroll_vec) * len);
-	opts.num_points = 0;
+	ctx->opts.points = malloc(sizeof(struct scroll_vec) * len);
+	ctx->opts.num_points = 0;
 
 	char *last = point_string, *p = point_string, buf;
 	double coord_buf = 0;
@@ -223,11 +249,11 @@ void scroll_parse_points(char *point_string) {
 
 			if (*p == ',') {
 				begun_point = 1;
-				opts.points[opts.num_points].x = coord_buf;
+				ctx->opts.points[ctx->opts.num_points].x = coord_buf;
 			} else {
 				begun_point = 0;
-				opts.points[opts.num_points].y = coord_buf;
-				++opts.num_points;
+				ctx->opts.points[ctx->opts.num_points].y = coord_buf;
+				++ctx->opts.num_points;
 			}
 
 			last = p + 1;
@@ -243,7 +269,7 @@ error:
 	exit(1);
 }
 
-void scroll_parse_args(int argc, char **argv) {
+void scroll_parse_args(struct scroll_ctx *ctx, int argc, char **argv) {
 	for (int i = 1; i < argc; i++) {
 		_check(argv[i][0] == '-', "Arguments must start with -");
 
@@ -252,39 +278,39 @@ void scroll_parse_args(int argc, char **argv) {
 		switch (argv[i][1]) {
 		case 'i':
 			_check(not_last, "Image expected");
-			opts.image = argv[++i];
+			ctx->opts.image = argv[++i];
 			break;
 		case 's':
 			_check(not_last, "Scale expected");
-			opts.scale = atof(argv[++i]);
-			_check(opts.scale >= 1, "Scale must be greater than or equal to 1");
+			ctx->opts.scale = atof(argv[++i]);
+			_check(ctx->opts.scale >= 1, "Scale must be greater than or equal to 1");
 			break;
 		case 'm':
 			_check(not_last, "Scaling mode expected");
-			opts.scaling_mode = atoi(argv[++i]);
-			_check(0 < opts.scaling_mode && opts.scaling_mode < SCALE_END, "Scaling mode must be between 0 and %d", SCALE_END-1);
+			ctx->opts.scaling_mode = atoi(argv[++i]);
+			_check(0 < ctx->opts.scaling_mode && ctx->opts.scaling_mode < SCALE_END, "Scaling mode must be between 0 and %d", SCALE_END-1);
 			break;
 		case 'V':
 			_check(not_last, "Velocity expected");
-			opts.speed =	atof(argv[++i]) / 1000.0;
-			_check(opts.speed > 0, "Velocity must be greater than zero");
+			ctx->opts.speed = atof(argv[++i]) / 1000.0;
+			_check(ctx->opts.speed > 0, "Velocity must be greater than zero");
 			break;
 		case 'p':
 			_check(not_last, "Points expected");
-			scroll_parse_points(argv[++i]);
+			scroll_parse_points(ctx, argv[++i]);
 			break;
 		case 'f':
 			_check(not_last, "FPS expected");
-			opts.fps = atoi(argv[++i]);
-			_check(opts.fps > 0, "FPS must be greater than zero");
+			ctx->opts.fps = atoi(argv[++i]);
+			_check(ctx->opts.fps > 0, "FPS must be greater than zero");
 			break;
 		case 'r':
 			_check(not_last, "Bezier resolution expected");
-			opts.bezier_res = atoi(argv[++i]);
-			_check(opts.bezier_res > 1, "Bezier resolution must be greater than one");
+			ctx->opts.bezier_res = atoi(argv[++i]);
+			_check(ctx->opts.bezier_res > 1, "Bezier resolution must be greater than one");
 			break;
 		case 'b':
-			opts.bezier = 1;
+			ctx->opts.bezier = 1;
 			break;
 #ifdef VERSION
 		case 'v':
@@ -297,8 +323,8 @@ void scroll_parse_args(int argc, char **argv) {
 		}
 	}
 
-	_check(opts.num_points > 1, "Need at least two points");
-	_check(opts.image, "Need an image");
+	_check(ctx->opts.num_points > 1, "Need at least two points");
+	_check(ctx->opts.image, "Need an image");
 
 	return;
 
@@ -315,155 +341,162 @@ error:
 	exit(1);
 }
 
-void scroll_copy(void) {
-	anim.points = opts.points;
-	anim.num_points = opts.num_points;
+void scroll_copy(struct scroll_ctx *ctx) {
+	ctx->anim.points = ctx->opts.points;
+	ctx->anim.num_points = ctx->opts.num_points;
 }
 
-void scroll_bezierify(void) {
-	if (opts.num_points <= 2) {
-		scroll_copy();
+void scroll_bezierify(struct scroll_ctx *ctx) {
+	if (ctx->opts.num_points <= 2) {
+		scroll_copy(ctx);
 		return;
 	}
 
-	anim.num_points = (opts.num_points - 2) * opts.bezier_res + 2;
-	anim.points = _malloc_or_die(anim.num_points * sizeof(struct scroll_vec));
+	ctx->anim.num_points = (ctx->opts.num_points - 2) * ctx->opts.bezier_res + 2;
+	ctx->anim.points = malloc(ctx->anim.num_points * sizeof(struct scroll_vec));
 	struct scroll_vec buf0, buf1;
 	int p = 1;
 
-	for (int i = 1; i < opts.num_points - 1; ++i) {
-		CENTER(buf0, opts.points[i - 1], opts.points[i]);
-		CENTER(buf1, opts.points[i], opts.points[i + 1]);
+	for (int i = 1; i < ctx->opts.num_points - 1; ++i) {
+		CENTER(buf0, ctx->opts.points[i - 1], ctx->opts.points[i]);
+		CENTER(buf1, ctx->opts.points[i], ctx->opts.points[i + 1]);
 
-		double x_0_1 = buf0.x - opts.points[i].x;
-		double y_0_1 = buf0.y - opts.points[i].y;
+		double x_0_1 = buf0.x - ctx->opts.points[i].x;
+		double y_0_1 = buf0.y - ctx->opts.points[i].y;
 
-		double x_2_1 = buf1.x - opts.points[i].x;
-		double y_2_1 = buf1.y - opts.points[i].y;
+		double x_2_1 = buf1.x - ctx->opts.points[i].x;
+		double y_2_1 = buf1.y - ctx->opts.points[i].y;
 
-		double step = (1.0 / (opts.bezier_res - 1));
-		for (int j = 0; j < opts.bezier_res; ++j) {
+		double step = (1.0 / (ctx->opts.bezier_res - 1));
+		for (int j = 0; j < ctx->opts.bezier_res; ++j) {
 			double t = step * j;
 			double t__2 = t * t;
 
-			anim.points[p].x = opts.points[i].x + (1 - 2 * t + t__2) * x_0_1 + t__2 * x_2_1;
-			anim.points[p++].y = opts.points[i].y + (1 - 2 * t + t__2) * y_0_1 + t__2 * y_2_1;
-			_debug("Bezier: %d: (%f; %f)", j, anim.points[p - 1].x, anim.points[p - 1].y);
+			ctx->anim.points[p].x = ctx->opts.points[i].x + (1 - 2 * t + t__2) * x_0_1 + t__2 * x_2_1;
+			ctx->anim.points[p++].y = ctx->opts.points[i].y + (1 - 2 * t + t__2) * y_0_1 + t__2 * y_2_1;
+			_debug("Bezier: %d: (%f; %f)", j, ctx->anim.points[p - 1].x, ctx->anim.points[p - 1].y);
 		}
 	}
-	memcpy(anim.points, opts.points, sizeof(struct scroll_vec));
-	memcpy(anim.points + anim.num_points - 1, opts.points + opts.num_points - 1, sizeof(struct scroll_vec));
+	memcpy(ctx->anim.points, ctx->opts.points, sizeof(struct scroll_vec));
+	memcpy(ctx->anim.points + ctx->anim.num_points - 1, ctx->opts.points + ctx->opts.num_points - 1, sizeof(struct scroll_vec));
 }
 
-void scroll_setup(void) {
+void scroll_init_x11(struct scroll_ctx *ctx) {
 	/* Xlib setup */
-	x11.display = XOpenDisplay(NULL);
-	_check_or_die(x11.display, "Can't open display");
+	ctx->x11.display = XOpenDisplay(NULL);
+	_check_or_die(ctx->x11.display, "Can't open display");
 
-	x11.root = RootWindow(x11.display, DefaultScreen(x11.display));
-	x11.visual = DefaultVisual(x11.display, DefaultScreen(x11.display));
-	x11.depth = DefaultDepth(x11.display, DefaultScreen(x11.display));
-	x11.colormap = DefaultColormap(x11.display, DefaultScreen(x11.display));
-	x11.gc = XCreateGC(x11.display, x11.root, 0, NULL);
+	ctx->x11.root = RootWindow(ctx->x11.display, DefaultScreen(ctx->x11.display));
+	ctx->x11.visual = DefaultVisual(ctx->x11.display, DefaultScreen(ctx->x11.display));
+	ctx->x11.depth = DefaultDepth(ctx->x11.display, DefaultScreen(ctx->x11.display));
+	ctx->x11.colormap = DefaultColormap(ctx->x11.display, DefaultScreen(ctx->x11.display));
+	ctx->x11.gc = XCreateGC(ctx->x11.display, ctx->x11.root, 0, NULL);
 
 	/* Imlib setup */
-	imlib_context_set_display(x11.display);
-	imlib_context_set_visual(x11.visual);
-	imlib_context_set_colormap(x11.colormap);
+	imlib_context_set_display(ctx->x11.display);
+	imlib_context_set_visual(ctx->x11.visual);
+	imlib_context_set_colormap(ctx->x11.colormap);
 	imlib_context_set_color_modifier(NULL);
 	imlib_context_set_progress_function(NULL);
 	imlib_context_set_operation(IMLIB_OP_COPY);
 
 	imlib_set_cache_size(4 * 1024 * 1024);
+}
 
-	image = imlib_load_image(opts.image);
-	_check_or_die(image, "Can't load image");
-
-	/* Add screens */
+void scroll_init_screens(struct scroll_ctx *ctx) {
+	/* Add a window for every screen */
 #ifdef XINERAMA
-	if (XineramaIsActive(x11.display)) {
-		XineramaScreenInfo *xinerama_screens = XineramaQueryScreens(x11.display, &num_screens);
+	if (XineramaIsActive(ctx->x11.display)) {
+		XineramaScreenInfo *xinerama_screens = XineramaQueryScreens(ctx->x11.display, &ctx->num_screens);
 
-		screens = _malloc_or_die(sizeof(struct scroll_screen *) * num_screens);
+		ctx->screens = malloc(sizeof(struct scroll_screen *) * ctx->num_screens);
 
-		for (int i = 0; i < num_screens; i++) {
-			screens[i] = new_scroll_screen(xinerama_screens[i].x_org, xinerama_screens[i].y_org,
+		for (int i = 0; i < ctx->num_screens; i++) {
+		  ctx->screens[i] = new_scroll_screen(ctx, xinerama_screens[i].x_org, xinerama_screens[i].y_org,
 				xinerama_screens[i].width, xinerama_screens[i].height);
 		}
 	}
 #else
-	Screen *screen = ScreenOfDisplay(x11.display, DefaultScreen(x11.display));
-	num_screens = 1;
-	screens = _malloc_or_die(sizeof(struct scroll_screen *));
-	screens[0] = new_scroll_screen(0, 0, screen->width, screen->height);
+	Screen *screen = ScreenOfDisplay(ctx->x11.display, DefaultScreen(ctx->x11.display));
+	ctx->num_screens = 1;
+	ctx->screens = malloc(sizeof(struct scroll_screen *));
+	ctx->screens[0] = new_scroll_screen(ctx, 0, 0, screen->width, screen->height);
 #endif
-
-	/* Create bezier curve if requested */
-	if (opts.bezier)
-		scroll_bezierify();
-	else
-		scroll_copy();
-
-	/* Adjust speed for scale */
-	opts.speed /= opts.scale;
 }
 
-void scroll_step(int delta) {
+void scroll_setup(struct scroll_ctx *ctx) {
+	scroll_init_x11(ctx);
+	scroll_init_screens(ctx);
+
+	ctx->image = imlib_load_image(ctx->opts.image);
+	_check_or_die(ctx->image, "Can't load image");
+
+	/* Create bezier curve if requested */
+	if (ctx->opts.bezier)
+		scroll_bezierify(ctx);
+	else
+		scroll_copy(ctx);
+
+	/* Adjust speed for scale */
+	ctx->opts.speed /= ctx->opts.scale;
+}
+
+void scroll_step(struct scroll_ctx *ctx, int delta) {
 	if (delta == 0)
 		return;
 
-	anim.cur_time += delta;
-	double pos = anim.cur_time / anim.cur_travel_time;
+	ctx->anim.cur_time += delta;
+	double pos = ctx->anim.cur_time / ctx->anim.cur_travel_time;
 
-	if (anim.cur_time >= anim.cur_travel_time) {
-		++anim.cur_point;
-		anim.cur_point %= anim.num_points;
+	if (ctx->anim.cur_time >= ctx->anim.cur_travel_time) {
+		++ctx->anim.cur_point;
+		ctx->anim.cur_point %= ctx->anim.num_points;
 
 		_debug("Overshoot: %f, %f",
-			anim.points[anim.cur_point].x - anim.cur_pos.x,
-			anim.points[anim.cur_point].y - anim.cur_pos.y);
+			ctx->anim.points[ctx->anim.cur_point].x - ctx->anim.cur_pos.x,
+			ctx->anim.points[ctx->anim.cur_point].y - ctx->anim.cur_pos.y);
 
-		int next_point = (anim.cur_point + 1) % anim.num_points;
+		int next_point = (ctx->anim.cur_point + 1) % ctx->anim.num_points;
 
-		anim.cur_vector.x = anim.points[next_point].x - anim.points[anim.cur_point].x;
-		anim.cur_vector.y = anim.points[next_point].y - anim.points[anim.cur_point].y;
+		ctx->anim.cur_vector.x = ctx->anim.points[next_point].x - ctx->anim.points[ctx->anim.cur_point].x;
+		ctx->anim.cur_vector.y = ctx->anim.points[next_point].y - ctx->anim.points[ctx->anim.cur_point].y;
 
-		anim.cur_travel_time = ABS(anim.cur_vector) / opts.speed;
-		anim.cur_time = 0;
+		ctx->anim.cur_travel_time = ABS(ctx->anim.cur_vector) / ctx->opts.speed;
+		ctx->anim.cur_time = 0;
 
 		_debug("Moving to point %d at (%f,%f) via vector (%f,%f) in %f millis",
-			next_point, anim.points[next_point].x, anim.points[next_point].y,
-			anim.cur_vector.x, anim.cur_vector.y,
-			anim.cur_travel_time);
+			next_point, ctx->anim.points[next_point].x, ctx->anim.points[next_point].y,
+			ctx->anim.cur_vector.x, ctx->anim.cur_vector.y,
+			ctx->anim.cur_travel_time);
 
 		return;
 	}
 
-	anim.cur_pos.x = anim.points[anim.cur_point].x + anim.cur_vector.x * pos;
-	anim.cur_pos.y = anim.points[anim.cur_point].y + anim.cur_vector.y * pos;
+	ctx->anim.cur_pos.x = ctx->anim.points[ctx->anim.cur_point].x + ctx->anim.cur_vector.x * pos;
+	ctx->anim.cur_pos.y = ctx->anim.points[ctx->anim.cur_point].y + ctx->anim.cur_vector.y * pos;
 }
 
-void scroll_draw(void) {
-	for (int i = 0; i < num_screens; ++i) {
-		XMoveWindow(x11.display,
-			screens[i]->image_window,
-			(double) -(screens[i]->image_width - screens[i]->width) * anim.cur_pos.x,
-			(double) -(screens[i]->image_height - screens[i]->height) * anim.cur_pos.y);
+void scroll_draw(struct scroll_ctx *ctx) {
+	for (int i = 0; i < ctx->num_screens; ++i) {
+		XMoveWindow(ctx->x11.display,
+			ctx->screens[i]->image_window,
+			(double) -(ctx->screens[i]->image_width - ctx->screens[i]->width) * ctx->anim.cur_pos.x,
+			(double) -(ctx->screens[i]->image_height - ctx->screens[i]->height) * ctx->anim.cur_pos.y);
 	}
 
-	XSync(x11.display, False);
+	XSync(ctx->x11.display, False);
 }
 
-void scroll_run(void) {
-	int millis_per_frame = 1000 / opts.fps;
+void scroll_run(struct scroll_ctx *ctx) {
+	int millis_per_frame = 1000 / ctx->opts.fps;
 	int last;
 	int delta = 1000;
 
 	for (;;) {
 		if (delta >= millis_per_frame) {
 			last = millis();
-			scroll_step(delta);
-			scroll_draw();
+			scroll_step(ctx, delta);
+			scroll_draw(ctx);
 		}
 
 		while (millis_per_frame > millis() - last) {
@@ -475,14 +508,17 @@ void scroll_run(void) {
 }
 
 int main(int argc, char **argv) {
-	scroll_parse_args(argc, argv);
-	scroll_setup();
+	struct scroll_ctx ctx;
+	scroll_init_ctx(&ctx);
+
+	scroll_parse_args(&ctx, argc, argv);
+	scroll_setup(&ctx);
 #ifdef DEBUG
 	_debug("Points:");
-	for (int i = 0; i < anim.num_points; i++) {
-		_debug("(%f, %f)", anim.points[i].x, anim.points[i].y);
+	for (int i = 0; i < ctx.anim.num_points; i++) {
+	  _debug("(%f, %f)", ctx.anim.points[i].x, ctx.anim.points[i].y);
 	}
 #endif
-	scroll_run();
+	scroll_run(&ctx);
 	return 0;
 }
