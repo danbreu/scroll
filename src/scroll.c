@@ -382,7 +382,6 @@ void scroll_bezierify(struct scroll_ctx *ctx) {
 }
 
 void scroll_init_x11(struct scroll_ctx *ctx) {
-	/* Xlib setup */
 	ctx->x11.display = XOpenDisplay(NULL);
 	_check_or_die(ctx->x11.display, "Can't open display");
 
@@ -391,8 +390,9 @@ void scroll_init_x11(struct scroll_ctx *ctx) {
 	ctx->x11.depth = DefaultDepth(ctx->x11.display, DefaultScreen(ctx->x11.display));
 	ctx->x11.colormap = DefaultColormap(ctx->x11.display, DefaultScreen(ctx->x11.display));
 	ctx->x11.gc = XCreateGC(ctx->x11.display, ctx->x11.root, 0, NULL);
+}
 
-	/* Imlib setup */
+void scroll_init_imlib(struct scroll_ctx *ctx) {
 	imlib_context_set_display(ctx->x11.display);
 	imlib_context_set_visual(ctx->x11.visual);
 	imlib_context_set_colormap(ctx->x11.colormap);
@@ -401,6 +401,9 @@ void scroll_init_x11(struct scroll_ctx *ctx) {
 	imlib_context_set_operation(IMLIB_OP_COPY);
 
 	imlib_set_cache_size(4 * 1024 * 1024);
+
+	ctx->image = imlib_load_image(ctx->opts.image);
+	_check_or_die(ctx->image, "Can't load image");
 }
 
 void scroll_init_screens(struct scroll_ctx *ctx) {
@@ -426,10 +429,8 @@ void scroll_init_screens(struct scroll_ctx *ctx) {
 
 void scroll_setup(struct scroll_ctx *ctx) {
 	scroll_init_x11(ctx);
+	scroll_init_imlib(ctx);
 	scroll_init_screens(ctx);
-
-	ctx->image = imlib_load_image(ctx->opts.image);
-	_check_or_die(ctx->image, "Can't load image");
 
 	/* Create bezier curve if requested */
 	if (ctx->opts.bezier)
